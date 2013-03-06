@@ -23,6 +23,8 @@ class PostgreSQLDatabase extends SS_Database {
 	protected $schema;
 
 	protected $supportsTransactions = true;
+	
+	const MASTER_DATABASE = 'postgres';
     
     /**
      * Full text cluster method. (e.g. GIN or GiST)
@@ -114,7 +116,7 @@ class PostgreSQLDatabase extends SS_Database {
                 throw new ErrorException('PostegreSQLDatabase::connect called without a database name specified');
             }
             // Fallback to master database connection if permission allows
-            $parameters['database'] = 'postgres';
+            $parameters['database'] = self::MASTER_DATABASE;
         }
         $this->databaseOriginal = $parameters['database'];
         
@@ -160,6 +162,18 @@ class PostgreSQLDatabase extends SS_Database {
 			$this->selectTimezone($parameters['timezone']);
 		}
     }
+	
+	protected function connectMaster() {
+		$parameters = $this->parameters;
+		$parameters['database'] = self::MASTER_DATABASE;
+		$this->connector->connect($parameters);
+	}
+	
+	protected function connectDefault() {
+		$parameters = $this->parameters;
+		$parameters['database'] = $this->databaseOriginal;
+		$this->connector->connect($parameters);
+	}
     
 	/**
 	 * Sets the system timezone for the database connection
@@ -384,7 +398,7 @@ class PostgreSQLDatabase extends SS_Database {
         }
 	}
 	
-	public function transactionEnd(){
+	public function transactionEnd($chain = false){
 		$this->query('COMMIT;');
 	}
     

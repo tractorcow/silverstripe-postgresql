@@ -62,10 +62,11 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
     }
 
 	/**
- 	* Returns true if the schema exists in the current database
- 	* @param string $name
- 	* @return boolean
- 	*/
+ 	 * Returns true if the schema exists in the current database
+	 * 
+ 	 * @param string $name
+ 	 * @return boolean
+ 	 */
  	public function schemaExists($name) {
  		return $this->preparedQuery(
             "SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = ?;",
@@ -444,6 +445,7 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 
 	/**
 	 * Change the database type of the given field.
+	 * 
 	 * @param string $tableName The name of the tbale the field is in.
 	 * @param string $fieldName The name of the field to change.
 	 * @param string $fieldSpec The new field specification
@@ -732,23 +734,23 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
             array($table, $this->database->currentSchema())
         );
 
-		$indexList = Array();
+		$indexList = array();
   		foreach($indexes as $index) {
   			// Key for the indexList array.  Differs from other DB implementations, which is why
   			// requireIndex() needed to be overridden
   			$indexName = $index['indexname']; 
 
   			//We don't actually need the entire created command, just a few bits:
-  			$prefix='';
+  			$type = '';
 
   			//Check for uniques:
   			if(substr($index['indexdef'], 0, 13)=='CREATE UNIQUE') {
-  				$prefix='unique ';
+  				$type = 'unique';
 			}
 
   			//check for hashes, btrees etc:
   			if(strpos(strtolower($index['indexdef']), 'using hash ')!==false) {
-  				$prefix='using hash ';
+  				$type = 'hash';
 			}
 
   			//TODO: Fix me: btree is the default index type:
@@ -756,12 +758,12 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
   			//	$prefix='using btree ';
 
   			if(strpos(strtolower($index['indexdef']), 'using rtree ')!==false) {
-  				$prefix='using rtree ';
+  				$type = 'rtree';
 			}
 
 			// For fulltext indexes we need to extract the columns from another source
 			if (stristr($index['indexdef'], 'using gin')) {
-				$prefix = 'fulltext ';
+				$type = 'fulltext';
 				// Extract trigger information from postgres
 				$triggerName = preg_replace('/^ix_/', 'ts_', $index['indexname']);
 				$columns = $this->extractTriggerColumns($triggerName);
@@ -769,12 +771,15 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 			} else {
 				$columnString = $this->quoteColumnSpecString($index['indexdef']);
 			}
-
-			$indexList[$indexName]['indexname'] = $index['indexname'];
-			$indexList[$indexName]['spec'] = "$prefix($columnString)";
+			
+			$indexList[$indexName] = $this->parseIndexSpec($index, array(
+				'name' => $indexName, // Not the correct name in the PHP, as this will be a mangled postgres-unique code
+				'value' => $columnString,
+				'type' => $type
+			));
 		}
 
-  		return isset($indexList) ? $indexList : null;
+  		return $indexList;
 
 	}
 
@@ -782,7 +787,7 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 		$tables = array();
         $result = $this->preparedQuery(
             "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = ? AND tablename NOT ILIKE 'pg\\\_%' AND tablename NOT ILIKE 'sql\\\_%'",
-            array($this->schema)
+            array($this->database->currentSchema())
         );
 		foreach($result as $record) {
 			$table = reset($record);
@@ -813,16 +818,28 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 
 	/**
 	 * A function to return the field names and datatypes for the particular table
+	 * 
+	 * @param string $tableName
+	 * @return array List of columns an an associative array with the keys Column and DataType
 	 */
-	public function tableDetails($tableName){
-		$schema_SQL = pg_escape_string($this->dbConn, $this->schema);
- 		$query="SELECT a.attname as \"Column\", pg_catalog.format_type(a.atttypid, a.atttypmod) as \"Datatype\" FROM pg_catalog.pg_attribute a WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attrelid = ( SELECT c.oid FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relname ~ '^($tableName)$' AND pg_catalog.pg_table_is_visible(c.oid) AND n.nspname = '{$schema_SQL}');";
+	public function tableDetails($tableName) {
+ 		$query = "SELECT a.attname as \"Column\", pg_catalog.format_type(a.atttypid, a.atttypmod) as \"Datatype\"
+				FROM pg_catalog.pg_attribute a
+				WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attrelid = (
+					SELECT c.oid
+					FROM pg_catalog.pg_class c
+					LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+					WHERE c.relname = ? AND pg_catalog.pg_table_is_visible(c.oid) AND n.nspname = ?
+				);";
 
-		$result=DB::query($query);
+		$result = $this->preparedQuery($query, $tableName, $this->database->currentSchema());
 
-		$table=Array();
-		while($row=pg_fetch_assoc($result)){
-			$table[]=Array('Column'=>$row['Column'], 'DataType'=>$row['DataType']);
+		$table = array();
+		while($row = pg_fetch_assoc($result)) {
+			$table[] = array(
+				'Column' => $row['Column'],
+				'DataType' => $row['DataType']
+			);
 		}
 
 		return $table;
@@ -831,21 +848,24 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	/**
 	 * Pass a legit trigger name and it will be dropped
 	 * This assumes that the trigger has been named in a unique fashion
+	 * 
+	 * @param string $triggerName Name of the trigger
+	 * @param string $tableName Name of the table
 	 */
 	function dropTrigger($triggerName, $tableName){
-		$exists=DB::query("SELECT tgname FROM pg_trigger WHERE tgname='$triggerName';")->first();
+		$exists = $this->preparedQuery("SELECT tgname FROM pg_trigger WHERE tgname = ?;", array($triggerName))->first();
 		if($exists){
-			DB::query("DROP trigger $triggerName ON \"$tableName\";");
+			$this->query("DROP trigger $triggerName ON \"$tableName\";");
 		}
 	}
 
 	/**
 	 * This will return the fields that the trigger is monitoring
-	 * @param string $trigger
-	 *
+	 * 
+	 * @param string $trigger Name of the trigger
 	 * @return array
 	 */
-	function triggerFieldsFromTrigger($trigger){
+	function triggerFieldsFromTrigger($trigger) {
 
 		if($trigger){
 			$tsvector='tsvector_update_trigger';
@@ -862,46 +882,49 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 				$result[]=trim($field_bit);
 
 			return $result;
-		} else
+		} else {
 			return false;
+		}
 	}
 
 	/**
 	 * Return a boolean type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
 	public function boolean($values, $asDbValue=false){
 		//Annoyingly, we need to do a good ol' fashioned switch here:
-		($values['default']) ? $default='1' : $default='0';
+		$default = $values['default'] ? '1' : '0';
 
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
-
-		if($asDbValue)
-			return Array('data_type'=>'smallint');
-		else {
-			if($values['arrayValue']!='')
-				$default='';
-			else
-				$default=' default ' . (int)$values['default'];
-
-			return "smallint{$values['arrayValue']}" . $default;
-
 		}
+
+		if($asDbValue) {
+			return array('data_type'=>'smallint');
+		} 
+		
+		if($values['arrayValue'] != '') {
+			$default = '';
+		} else {
+			$default = ' default ' . (int)$values['default'];
+		}
+		return "smallint{$values['arrayValue']}" . $default;
 	}
 
 	/**
 	 * Return a date type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
 	 * @return string
 	 */
 	public function date($values){
 
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
+		}
 
 		return "date{$values['arrayValue']}";
 	}
@@ -909,13 +932,15 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	/**
 	 * Return a decimal type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
 	public function decimal($values, $asDbValue=false){
 
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
+		}
 
 		// Avoid empty strings being put in the db
 		if($values['precision'] == '') {
@@ -929,27 +954,31 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 			$defaultValue = ' default ' . $values['default'];
 		}
 
-		if($asDbValue)
-			return Array('data_type'=>'numeric', 'precision'=>$precision);
-		else return "decimal($precision){$values['arrayValue']}$defaultValue";
+		if($asDbValue) {
+			return array('data_type' => 'numeric', 'precision' => $precision);
+		} else {
+			return "decimal($precision){$values['arrayValue']}$defaultValue";
+		}
 	}
 
 	/**
 	 * Return a enum type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
 	 * @return string
 	 */
 	public function enum($values){
 		//Enums are a bit different. We'll be creating a varchar(255) with a constraint of all the usual enum options.
 		//NOTE: In this one instance, we are including the table name in the values array
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
+		}
 
-		if($values['arrayValue']!='')
-			$default='';
-		else
-			$default=" default '{$values['default']}'";
+		if($values['arrayValue']!='') {
+			$default = '';
+		} else {
+			$default = " default '{$values['default']}'";
+		}
 
 		return "varchar(255){$values['arrayValue']}" . $default . " check (\"" . $values['name'] . "\" in ('" . implode('\', \'', $values['enums']) . "'))";
 
@@ -958,22 +987,27 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	/**
 	 * Return a float type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
-	public function float($values, $asDbValue=false){
-		if(!isset($values['arrayValue']))
+	public function float($values, $asDbValue = false){
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
+		}
 
-		if($asDbValue)
-			return Array('data_type'=>'double precision');
-		else return "float{$values['arrayValue']}";
+		if($asDbValue) {
+			return array('data_type' => 'double precision');
+		} else {
+			return "float{$values['arrayValue']}";
+		}
 	}
 
 	/**
 	 * Return a float type-formatted string cause double is not supported
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
 	public function double($values, $asDbValue=false){
@@ -983,70 +1017,80 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	/**
 	 * Return a int type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
-	public function int($values, $asDbValue=false){
+	public function int($values, $asDbValue = false){
 
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
-
-		if($asDbValue)
-			return Array('data_type'=>'integer', 'precision'=>'32');
-		else {
-			if($values['arrayValue']!='')
-				$default='';
-			else
-				$default=' default ' . (int)$values['default'];
-
-			return "integer{$values['arrayValue']}" . $default;
 		}
+
+		if($asDbValue) {
+			return Array('data_type'=>'integer', 'precision'=>'32');
+		} 
+		
+		if($values['arrayValue']!='') {
+			$default='';
+		} else {
+			$default=' default ' . (int)$values['default'];
+		}
+
+		return "integer{$values['arrayValue']}" . $default;
 	}
 
 	/**
 	 * Return a datetime type-formatted string
 	 * For PostgreSQL, we simply return the word 'timestamp', no other parameters are necessary
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
-	public function SS_Datetime($values, $asDbValue=false){
+	public function SS_Datetime($values, $asDbValue = false){
 
-		if(!isset($values['arrayValue']))
+		if(!isset($values['arrayValue'])) {
 			$values['arrayValue']='';
+		}
 
-		if($asDbValue)
-			return Array('data_type'=>'timestamp without time zone');
-		else
+		if($asDbValue) {
+			return array('data_type'=>'timestamp without time zone');
+		} else {
 			return "timestamp{$values['arrayValue']}";
+		}
 	}
 
 	/**
 	 * Return a text type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
-	public function text($values, $asDbValue=false){
+	public function text($values, $asDbValue = false){
 
-		if(!isset($values['arrayValue']))
-			$values['arrayValue']='';
+		if(!isset($values['arrayValue'])) {
+			$values['arrayValue'] = '';
+		}
 
-		if($asDbValue)
-			return Array('data_type'=>'text');
-		else
+		if($asDbValue) {
+			return array('data_type'=>'text');
+		} else {
 			return "text{$values['arrayValue']}";
+		}
 	}
 
 	/**
 	 * Return a time type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
 	 * @return string
 	 */
 	public function time($values){
-		if(!isset($values['arrayValue']))
-			$values['arrayValue']='';
+		if(!isset($values['arrayValue'])) {
+			$values['arrayValue'] = '';
+		}
 
 		return "time{$values['arrayValue']}";
 	}
@@ -1054,44 +1098,47 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	/**
 	 * Return a varchar type-formatted string
 	 *
-	 * @params array $values Contains a tokenised list of info about this data type
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
 	 * @return string
 	 */
 	public function varchar($values, $asDbValue=false){
 
-		if(!isset($values['arrayValue']))
-			$values['arrayValue']='';
+		if(!isset($values['arrayValue'])) {
+			$values['arrayValue'] = '';
+		}
 
-		if(!isset($values['precision']))
-			$values['precision']=255;
+		if(!isset($values['precision'])) {
+			$values['precision'] = 255;
+		}
 
-		if($asDbValue)
-			return Array('data_type'=>'varchar', 'precision'=>$values['precision']);
-		else
+		if($asDbValue) {
+			return array('data_type'=>'varchar', 'precision'=>$values['precision']);
+		} else {
 			return "varchar({$values['precision']}){$values['arrayValue']}";
+		}
 	}
 
 	/*
 	 * Return a 4 digit numeric type.  MySQL has a proprietary 'Year' type.
 	 * For Postgres, we'll use a 4 digit numeric
+	 * 
+	 * @param array $values Contains a tokenised list of info about this data type
+	 * @param boolean $asDbValue
+	 * @return string
 	 */
-	public function year($values, $asDbValue=false){
+	public function year($values, $asDbValue = false){
 
-		if(!isset($values['arrayValue']))
-			$values['arrayValue']='';
+		if(!isset($values['arrayValue'])) {
+			$values['arrayValue'] = '';
+		}
 
 		//TODO: the DbValue result does not include the numeric_scale option (ie, the ,0 value in 4,0)
-		if($asDbValue)
-			return Array('data_type'=>'decimal', 'precision'=>'4');
-		else
+		if($asDbValue) {
+			return array('data_type'=>'decimal', 'precision'=>'4');
+		} else {
 			return "decimal(4,0){$values['arrayValue']}";
-	}
-
-	function escape_character($escape=false){
-		if($escape)
-			return "\\\"";
-		else
-			return "\"";
+		}
 	}
 
 	/**
@@ -1100,6 +1147,9 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 *
 	 * @todo: create custom functions to allow weighted searches
 	 *
+	 * @param array $this_index Index specification for the fulltext index
+	 * @param string $tableName
+	 * @param string $name
 	 * @param array $spec
 	 */
 	function fulltext($this_index, $tableName, $name){
@@ -1108,14 +1158,19 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 
 		$fulltexts = "\"ts_$name\" tsvector";
 		$triggerName = $this->buildPostgresTriggerName($tableName, $name);
-		$language = self::search_language();
+		$language = PostgreSQLDatabase::search_language();
 
 		$this->dropTrigger($triggerName, $tableName);
 		$triggers = "CREATE TRIGGER \"$triggerName\" BEFORE INSERT OR UPDATE
 					ON \"$tableName\" FOR EACH ROW EXECUTE PROCEDURE
 					tsvector_update_trigger(\"ts_$name\", 'pg_catalog.$language', $columns);";
 
-		return Array('name' => $name, 'ts_name' => "ts_{$name}", 'fulltexts' => $fulltexts, 'triggers' => $triggers);
+		return array(
+			'name' => $name,
+			'ts_name' => "ts_{$name}",
+			'fulltexts' => $fulltexts,
+			'triggers' => $triggers
+		);
 	}
 
 	function IdColumn($asDbValue = false, $hasAutoIncPK = true){
@@ -1126,17 +1181,9 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	public function hasTable($tableName) {
  		$result = $this->preparedQuery(
             "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = ? AND tablename = ?;",
-            array($this->schema, $tableName)
+            array($this->database->currentSchema(), $tableName)
         );
 		return ($result->numRecords() > 0);
-	}
-
-	/**
-	 * Returns the SQL command to get all the tables in this database
-	 */
-	function allTablesSQL(){
-		$schema_SQL = pg_escape_string($this->dbConn, $this->schema);
- 		return "SELECT table_name FROM information_schema.tables WHERE table_schema='{$schema_SQL}' AND table_type='BASE TABLE';";
 	}
 
 	/**
@@ -1150,24 +1197,27 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 */
 	function enumValuesForField($tableName, $fieldName) {
 		//return array('SiteTree','Page');
-		$constraints=$this->constraintExists("{$tableName}_{$fieldName}_check");
-		$classes=Array();
-		if($constraints)
-			$classes=$this->EnumValuesFromConstraint($constraints['pg_get_constraintdef']);
-
-		return $classes;
+		$constraints = $this->constraintExists("{$tableName}_{$fieldName}_check");
+		if($constraints) {
+			return $this->enumValuesFromConstraint($constraints['pg_get_constraintdef']);
+		} else {
+			return array();
+		}
 	}
 
 	/**
 	 * Get the actual enum fields from the constraint value:
+	 * 
+	 * @param string $constraint
+	 * @return array List of enum items
 	 */
-	private function EnumValuesFromConstraint($constraint){
-		$constraint=substr($constraint, strpos($constraint, 'ANY (ARRAY[')+11);
-		$constraint=substr($constraint, 0, -11);
-		$constraints=Array();
-		$segments=explode(',', $constraint);
+	protected function enumValuesFromConstraint($constraint){
+		$constraint = substr($constraint, strpos($constraint, 'ANY (ARRAY[')+11);
+		$constraint = substr($constraint, 0, -11);
+		$constraints = array();
+		$segments = explode(',', $constraint);
 		foreach($segments as $this_segment){
-			$bits=preg_split('/ *:: */', $this_segment);
+			$bits = preg_split('/ *:: */', $this_segment);
 			array_unshift($constraints, trim($bits[0], " '"));
 		}
 
@@ -1178,27 +1228,24 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * This is a lookup table for data types.
 	 * For instance, Postgres uses 'INT', while MySQL uses 'UNSIGNED'
 	 * So this is a DB-specific list of equivilents.
+	 * 
+	 * @param string $type
 	 */
 	function dbDataType($type){
-		$values=Array(
-			'unsigned integer'=>'INT'
+		$values = array(
+			'unsigned integer' => 'INT'
 		);
 
-		if(isset($values[$type]))
-			return $values[$type];
+		if(isset($values[$type])) return $values[$type];
 		else return '';
-	}
-
-	/*
-	 * This changes the index name depending on database requirements.
-	 */
-	function modifyIndex($index, $spec) {
-		return $index;
 	}
 
 	/*
 	 * Given a tablespace and and location, either create a new one
 	 * or update the existing one
+	 * 
+	 * @param string $name
+	 * @param string $location
 	 */
 	public function createOrReplaceTablespace($name, $location){
 		$existing = $this->preparedQuery(
@@ -1219,6 +1266,13 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
         }
 	}
 
+	/**
+	 * 
+	 * @param string $tableName
+	 * @param array $partitions
+	 * @param array $indexes
+	 * @param array $extensions
+	 */
 	public function createOrReplacePartition($tableName, $partitions, $indexes, $extensions){
 
 		//We need the plpgsql language to be installed for this to work:
@@ -1231,63 +1285,73 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 		if($extensions && isset($extensions['tablespace'])){
 			$this->createOrReplaceTablespace($extensions['tablespace']['name'], $extensions['tablespace']['location']);
 			$tableSpace=' TABLESPACE ' . $extensions['tablespace']['name'];
-		} else
+		} else {
 			$tableSpace='';
+		}
 
-		foreach($partitions as $partition_name=>$partition_value){
+		foreach($partitions as $partition_name => $partition_value){
 			//Check that this child table does not already exist:
 			if(!$this->hasTable($partition_name)){
-				DB::query("CREATE TABLE \"$partition_name\" (CHECK (" . str_replace('NEW.', '', $partition_value) . ")) INHERITS (\"$tableName\")$tableSpace;");
+				$this->query("CREATE TABLE \"$partition_name\" (CHECK (" . str_replace('NEW.', '', $partition_value) . ")) INHERITS (\"$tableName\")$tableSpace;");
 			} else {
 				//Drop the constraint, we will recreate in in the next line
-				$existing_constraint=$this->query("SELECT conname FROM pg_constraint WHERE conname='{$partition_name}_pkey';");
+				$existing_constraint = $this->preparedQuery(
+					"SELECT conname FROM pg_constraint WHERE conname = ?;",
+					array("{$partition_name}_pkey")
+				);
 				if($existing_constraint){
-					DB::query("ALTER TABLE \"$partition_name\" DROP CONSTRAINT \"{$partition_name}_pkey\";");
+					$this->query("ALTER TABLE \"$partition_name\" DROP CONSTRAINT \"{$partition_name}_pkey\";");
 				}
 				$this->dropTrigger(strtolower('trigger_' . $tableName . '_insert'), $tableName);
 			}
 
-			DB::query("ALTER TABLE \"$partition_name\" ADD CONSTRAINT \"{$partition_name}_pkey\" PRIMARY KEY (\"ID\");");
+			$this->query("ALTER TABLE \"$partition_name\" ADD CONSTRAINT \"{$partition_name}_pkey\" PRIMARY KEY (\"ID\");");
 
 			if($first){
 				$trigger.='IF';
 				$first=false;
-			} else
+			} else {
 				$trigger.='ELSIF';
+			}
 
-			$trigger.=" ($partition_value) THEN INSERT INTO \"$partition_name\" VALUES (NEW.*);";
+			$trigger .= " ($partition_value) THEN INSERT INTO \"$partition_name\" VALUES (NEW.*);";
 
 			if($indexes){
 				// We need to propogate the indexes through to the child pages.
 				// Some of this code is duplicated, and could be tidied up
-				foreach($indexes as $name=>$this_index){
+				foreach($indexes as $name => $this_index){
 
 					if($this_index['type']=='fulltext'){
-						$fillfactor=$where='';
-						if(isset($this_index['fillfactor']))
-							$fillfactor='WITH (FILLFACTOR = ' . $this_index['fillfactor'] . ')';
-						if(isset($this_index['where']))
-							$where='WHERE ' . $this_index['where'];
+						$fillfactor = $where = '';
+						if(isset($this_index['fillfactor'])) {
+							$fillfactor = 'WITH (FILLFACTOR = ' . $this_index['fillfactor'] . ')';
+						}
+						if(isset($this_index['where'])) {
+							$where = 'WHERE ' . $this_index['where'];
+						}
                         $clusterMethod = PostgreSQLDatabase::default_fts_cluster_method();
-						DB::query("CREATE INDEX \"" . $this->buildPostgresIndexName($partition_name, $this_index['name'])  . "\" ON \"" . $partition_name . "\" USING $clusterMethod(\"ts_" . $name . "\") $fillfactor $where");
-						$ts_details=$this->fulltext($this_index, $partition_name, $name);
-						DB::query($ts_details['triggers']);
+						$this->query("CREATE INDEX \"" . $this->buildPostgresIndexName($partition_name, $this_index['name'])  . "\" ON \"" . $partition_name . "\" USING $clusterMethod(\"ts_" . $name . "\") $fillfactor $where");
+						$ts_details = $this->fulltext($this_index, $partition_name, $name);
+						$this->query($ts_details['triggers']);
 					} else {
 
-						if(is_array($this_index))
-							$index_name=$this_index['name'];
-						else $index_name=trim($this_index, '()');
+						if(is_array($this_index)) {
+							$index_name = $this_index['name'];
+						} else {
+							$index_name = trim($this_index, '()');
+						}
 
-						$createIndex=$this->getIndexSqlDefinition($partition_name, $index_name, $this_index);
-						if($createIndex!==false)
-							DB::query($createIndex);
+						$createIndex = $this->getIndexSqlDefinition($partition_name, $index_name, $this_index);
+						if($createIndex !== false) {
+							$this->query($createIndex);
+						}
 					}
 				}
 			}
 
 			//Lastly, clustering goes here:
 			if($extensions && isset($extensions['cluster'])){
-				DB::query("CLUSTER \"$partition_name\" USING \"{$extensions['cluster']}\";");
+				$this->query("CLUSTER \"$partition_name\" USING \"{$extensions['cluster']}\";");
 			}
 		}
 

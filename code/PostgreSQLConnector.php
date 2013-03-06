@@ -75,10 +75,6 @@ class PostgreSQLConnector extends DBConnector {
 		return pg_affected_rows($this->lastQuery);
     }
 
-    public function escapeString($value) {
-        return pg_escape_string($this->dbConn, $value);
-    }
-
     public function getGeneratedID($table) {
 		$result = $this->query("SELECT last_value FROM \"{$table}_ID_seq\";")->first();
  		return $result['last_value'];
@@ -209,7 +205,15 @@ class PostgreSQLConnector extends DBConnector {
     }
 
     public function quoteString($value) {
-        return pg_escape_literal($this->dbConn, $value);
+		if(function_exists('pg_escape_literal')) {
+			return pg_escape_literal($this->dbConn, $value);
+		} else {
+			return "'" . $this->escapeString($value) . "'";
+		}
+    }
+
+    public function escapeString($value) {
+        return pg_escape_string($this->dbConn, $value);
     }
 
     public function selectDatabase($name) {
