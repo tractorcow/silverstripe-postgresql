@@ -5,6 +5,7 @@
  * 
  * The connector doesn't know anything about schema selection, so code related to
  * masking multiple databases as schemas should be handled in the database controller
+ * and schema manager.
  * 
  * @package sapphire
  * @subpackage model
@@ -31,6 +32,13 @@ class PostgreSQLConnector extends DBConnector {
      * @var resource
      */
     protected $lastQuery = null;
+	
+	/**
+	 * Last parameters used to connect
+	 *
+	 * @var array
+	 */
+	protected $lastParameters = null;
     
     /**
      * Escape a parameter to be used in the connection string
@@ -52,6 +60,8 @@ class PostgreSQLConnector extends DBConnector {
     }
 
     public function connect($parameters) {
+		$this->lastParameters = $parameters;
+		
         // Escape parameters
         $arguments = array(
             $this->escapeParameter($parameters, 'server', 'host', 'localhost'),
@@ -68,7 +78,7 @@ class PostgreSQLConnector extends DBConnector {
 		}
 			
 		//By virtue of getting here, the connection is active:
-		$this->databaseName = empty($parameters['database']) ? 'postgres' : $parameters['database'];
+		$this->databaseName = empty($parameters['database']) ? PostgreSQLDatabase::MASTER_DATABASE : $parameters['database'];
     }
     
     public function affectedRows() {
@@ -215,15 +225,24 @@ class PostgreSQLConnector extends DBConnector {
     public function escapeString($value) {
         return pg_escape_string($this->dbConn, $value);
     }
+	
+	public function escapeIdentifier($value, $separator = '.') {
+		if(empty($separator) && function_exists('pg_escape_identifier')) {
+			return pg_escape_identifier($this->dbConn, $value);
+		}
+		
+		// Let parent function handle recursive calls
+		return parent::escapeIdentifier ($value, $separator);
+	}
 
     public function selectDatabase($name) {
         if($name !== $this->databaseName) {
-            user_error("PDOConnector can't change databases. Please create a new database connection");
-        }
+            user_error("PostgreSQLConnector can't change databases. Please create a new database connection", E_USER_ERROR);
+		}
         return true;
     }
 
     public function unloadDatabase() {
         $this->databaseName = null;
-    }    
+    }
 }

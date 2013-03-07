@@ -43,22 +43,79 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
     protected function indexKey($table, $index, $spec) {
         return $this->buildPostgresIndexName($table, $index);
     }
+	
+	/**
+	 * Creates a postgres database, ignoring model_schema_as_database
+	 * 
+	 * @param string $name
+	 */
+	public function createPostgresDatabase($name) {
+		$this->preparedQuery("CREATE DATABASE ?;", array($name));
+	}
 
     public function createDatabase($name) {
-		$this->preparedQuery("CREATE DATABASE ?;", array($name));
+		if(PostgreSQLDatabase::model_schema_as_database()) {
+			$schemaName = $this->database->databaseToSchemaName($name);
+			return $this->createSchema($schemaName);
+		}
+		return $this->createPostgresDatabase($name);
     }
 
-    public function databaseExists($name) {
+	/**
+	 * Determines if a postgres database exists, ignoring model_schema_as_database
+	 * 
+	 * @param string $name
+	 * @return boolean
+	 */
+	public function postgresDatabaseExists($name) {
         $result = $this->preparedQuery("SELECT datname FROM pg_database WHERE datname = ?;", array($name));
 		return $result->first() ? true : false;  
+	}
+			
+    public function databaseExists($name) {
+		if(PostgreSQLDatabase::model_schema_as_database()) {
+			$schemaName = $this->database->databaseToSchemaName($name);
+			return $this->schemaExists($schemaName);
+		}
+        return $this->postgresDatabaseExists($name);
     }
+	
+	/**
+	 * Determines the list of all postgres databases, ignoring model_schema_as_database
+	 * 
+	 * @return array
+	 */
+	public function postgresDatabaseList() {
+		return $this->query("SELECT datname FROM pg_database WHERE datistemplate=false;")->column();
+	}
 
     public function databaseList() {
-		return $this->query("SELECT datname FROM pg_database WHERE datistemplate=false;")->column();
+		if(PostgreSQLDatabase::model_schema_as_database()) {
+			$schemas = $this->schemaList();
+			$names = array();
+			foreach($schemas as $schema) {
+				$names[] = $this->database->schemaToDatabaseName($schema);
+			}
+			return array_unique($names);
+		}
+		return $this->postgresDatabaseList();
     }
+	/**
+	 * Drops a postgres database, ignoring model_schema_as_database
+	 * 
+	 * @param string $name
+	 */
+	public  function dropPostgresDatabase($name) {
+		$nameSQL = $this->database->escapeIdentifier($name);
+		$this->query("DROP DATABASE $nameSQL;");
+	}
 
     public function dropDatabase($name) {
-		$this->preparedQuery("DROP DATABASE ?;", array($name));
+		if(PostgreSQLDatabase::model_schema_as_database()) {
+			$schemaName = $this->database->databaseToSchemaName($name);
+			return $this->dropSchema($schemaName);
+		}
+		$this->dropPostgresDatabase($name);
     }
 
 	/**
@@ -80,7 +137,8 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * @param string $name
 	 */
 	public function createSchema($name) {
-		$this->preparedQuery("CREATE SCHEMA ?;", array($name));
+		$nameSQL = $this->database->escapeIdentifier($name);
+		$this->query("CREATE SCHEMA $nameSQL;");
 	}
 
 	/**
@@ -89,7 +147,21 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * @param string $name
 	 */
 	public function dropSchema($name) {
-		$this->preparedQuery("DROP SCHEMA ? CASCADE;", array($name));
+		$nameSQL = $this->database->escapeIdentifier($name);
+		$this->query("DROP SCHEMA $nameSQL CASCADE;");
+	}
+	
+	/**
+	 * Returns the list of all available schemas on the current database
+	 * 
+	 * @return array
+	 */
+	public function schemaList() { 
+		return $this->query("
+			SELECT nspname
+			FROM pg_catalog.pg_namespace
+			WHERE nspname <> 'information_schema' AND nspname !~ E'^pg_'"
+		)->column();
 	}
   
     public function createTable($table, $fields = null, $indexes = null, $options = null, $advancedOptions = null) {
@@ -1374,7 +1446,7 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
         )->first();
 
 		if(!$result) {
-			$this->preparedQuery("CREATE LANGUAGE ?;", array($language));
+			$this->query("CREATE LANGUAGE $language;");
 		}
 	}
 
@@ -1388,7 +1460,7 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * @return string
 	 */
 	public function set($values){
-		user_error("PostGreSQL does not support multi-enum");
+		user_error("PostGreSQL does not support multi-enum", E_USER_ERROR);
 		return "int";
 	}
 }

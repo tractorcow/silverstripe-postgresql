@@ -25,6 +25,8 @@ class PostgreSQLDatabase extends SS_Database {
 	protected $supportsTransactions = true;
 	
 	const MASTER_DATABASE = 'postgres';
+	
+	const MASTER_SCHEMA = 'public';
     
     /**
      * Full text cluster method. (e.g. GIN or GiST)
@@ -69,7 +71,7 @@ class PostgreSQLDatabase extends SS_Database {
      * If this is true then the database will only be set during the initial connection,
      * and attempts to change to this database will use the 'public' schema instead
      */
-    public function model_schema_as_database() {
+    public static function model_schema_as_database() {
         return Config::inst()->get('PostgreSQLDatabase', 'model_schema_as_database');
     }
 
@@ -122,7 +124,7 @@ class PostgreSQLDatabase extends SS_Database {
         
         // check schema name
         if(empty($parameters['schema'])) {
-            $parameters['schema'] = 'public';
+            $parameters['schema'] = self::MASTER_SCHEMA;
         }
         $this->schemaOriginal = $parameters['schema'];
         
@@ -143,8 +145,8 @@ class PostgreSQLDatabase extends SS_Database {
         if(self::allow_query_master_postgres()) {
             // Use master connection to setup initial schema
             $this->connectMaster();
-            if(!$this->schemaManager->databaseExists($this->databaseOriginal)) {
-                $this->schemaManager->createDatabase($this->databaseOriginal);
+            if(!$this->schemaManager->postgresDatabaseExists($this->databaseOriginal)) {
+                $this->schemaManager->createPostgresDatabase($this->databaseOriginal);
             }
         }
 
@@ -152,10 +154,7 @@ class PostgreSQLDatabase extends SS_Database {
 		$this->connectDefault();
 
 		// Set up the schema if required
- 		if(!$this->schemaManager->schemaExists($this->schemaOriginal)) {
- 			 $this->schemaManager->createSchema($this->schemaOriginal);
-        }
- 		$this->setSchema($this->schemaOriginal);
+ 		$this->setSchema($this->schemaOriginal, true);
 
 		// Set the timezone if required.
 		if (isset($parameters['timezone'])) {
@@ -182,7 +181,7 @@ class PostgreSQLDatabase extends SS_Database {
 	 */
 	public function selectTimezone($timezone) {
 		if (empty($timezone)) return;
-        $this->preparedQuery("SET SESSION TIME ZONE ?;", array($timezone));
+        $this->query("SET SESSION TIME ZONE '$timezone';");
     }
 
 	public function supportsCollations() {
@@ -203,22 +202,36 @@ class PostgreSQLDatabase extends SS_Database {
      * @return string Name of current schema
 	 */
 	public function currentSchema() {
-        if($this->schema) return $this->schema;
-		return $this->query('SELECT current_schema()')->value();
+        return $this->schema;
 	}
 
  	/**
  	 * Utility method to manually set the schema to an alternative
  	 * Check existance & sets search path to the supplied schema name
-     * 
- 	 * @param string $schema
- 	 */
- 	public function setSchema($schema) {
+	 * 
+	 * @param string $name Name of the schema
+	 * @param boolean $create Flag indicating whether the schema should be created
+	 * if it doesn't exist. If $create is false and the schema doesn't exist
+	 * then an error will be raised
+	 * @param int|boolean $errorLevel The level of error reporting to enable for
+	 * the query, or false if no error should be raised
+	 * @return boolean Flag indicating success
+	 */
+ 	public function setSchema($schema, $create = false, $errorLevel = E_USER_ERROR) {
  		if(!$this->schemaManager->schemaExists($schema)) {
-            user_error("Schema $schema does not exist", E_USER_ERROR);
+			// Check DB creation permisson
+			if (!$create) {
+				if ($errorLevel !== false) {
+					user_error("Schema $schema does not exist", $errorLevel);
+				}
+				$this->schema = null;
+				return false;
+			}
+			$this->schemaManager->createSchema($schema);
         }
  		$this->setSchemaSearchPath($schema);
  	 	$this->schema = $schema;
+		return true;
  	}
 
  	/**
@@ -521,6 +534,91 @@ class PostgreSQLDatabase extends SS_Database {
 	function random(){
 		return 'RANDOM()';
 	}
+	
+	/**
+	 * Determines the name of the current database to be reported externally
+	 * by substituting the schema name for the database name.
+	 * Should only be used when model_schema_as_database is true
+	 * 
+	 * @param string $schema Name of the schema
+	 * @return string Name of the database to report
+	 */
+	public function schemaToDatabaseName($schema) {
+		switch($schema) {
+			case $this->schemaOriginal: return $this->databaseOriginal;
+			default: return $schema;
+		}
+	}
+	
+	/**
+	 * Translates a requested database name to a schema name to substitute internally.
+	 * Should only be used when model_schema_as_database is true
+	 * 
+	 * @param string $database Name of the database
+	 * @return string Name of the schema to use for this database internally
+	 */
+	public function databaseToSchemaName($database) {
+		switch($database) {
+			case $this->databaseOriginal: return $this->schemaOriginal;
+			default: return $database;
+		}
+	}
+	
+	public function dropCurrentDatabase() {
+		if(self::model_schema_as_database()) {
+			// Check current schema is valid
+			$oldSchema = $this->schema;
+			if(empty($oldSchema)) return true; // Nothing selected to drop
+			
+			// Select another schema
+			if($oldSchema !== $this->schemaOriginal) {
+				$this->setSchema($this->schemaOriginal);
+			} elseif($oldSchema !== self::MASTER_SCHEMA) {
+				$this->setSchema(self::MASTER_SCHEMA);
+			} else {
+				$this->schema = null;
+			}
+			
+			// Remove this schema
+			$this->schemaManager->dropSchema($oldSchema);
+		} else {
+			parent::dropCurrentDatabase();
+		}
+	}
+	
+	public function getSelectedDatabase() {
+		if(self::model_schema_as_database()) {
+			return $this->schemaToDatabaseName($this->schema);
+		}
+		return parent::getSelectedDatabase();
+	}
     
-    // @todo - override selectDatabase to use the schema switcheroo stuff
+	public function selectDatabase($name, $create = false, $errorLevel = E_USER_ERROR) {
+		
+		// Substitute schema here as appropriate
+		if(self::model_schema_as_database()) {
+			// Selecting the database itself should be treated as selecting the public schema
+			$schemaName = $this->databaseToSchemaName($name);
+			return $this->setSchema($schemaName, $create, $errorLevel);
+		}
+		
+		// Database selection requires that a new connection is established.
+		// This is not ideal postgres practise
+		if (!$this->schemaManager->databaseExists($name)) {
+			// Check DB creation permisson
+			if (!$create) {
+				if ($errorLevel !== false) {
+					user_error("Attempted to connect to non-existing database \"$name\"", $errorLevel);
+				}
+				// Unselect database
+				$this->connector->unloadDatabase();
+				return false;
+			}
+			$this->schemaManager->createDatabase($name);
+		}
+		
+		// New connection made here, treating the new database name as the new original
+		$this->databaseOriginal = $name;
+		$this->connectDefault();
+	}
 }
