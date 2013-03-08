@@ -190,12 +190,12 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 		//for GiST searches
 		$fulltexts = '';
 		$triggers = '';
-		if($indexes){
-			foreach($indexes as $name=>$this_index){
-				if(is_array($this_index) && $this_index['type']=='fulltext'){
-					$ts_details=$this->fulltext($this_index, $table, $name);
-					$fulltexts.=$ts_details['fulltexts'] . ', ';
-					$triggers.=$ts_details['triggers'];
+		if($indexes) {
+			foreach($indexes as $name => $this_index){
+				if(is_array($this_index) && $this_index['type'] == 'fulltext') {
+					$ts_details = $this->fulltext($this_index, $table, $name);
+					$fulltexts .= $ts_details['fulltexts'] . ', ';
+					$triggers .= $ts_details['triggers'];
 				}
 			}
 		}
@@ -925,9 +925,14 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * @param string $tableName Name of the table
 	 */
 	function dropTrigger($triggerName, $tableName){
-		$exists = $this->preparedQuery("SELECT tgname FROM pg_trigger WHERE tgname = ?;", array($triggerName))->first();
+		$exists = $this->preparedQuery("
+			SELECT trigger_name
+			FROM information_schema.triggers
+			WHERE trigger_name = ? AND trigger_schema = ?;",
+			array($triggerName, $this->database->currentSchema())
+		)->first();
 		if($exists){
-			$this->query("DROP trigger $triggerName ON \"$tableName\";");
+			$this->query("DROP trigger IF EXISTS $triggerName ON \"$tableName\";");
 		}
 	}
 

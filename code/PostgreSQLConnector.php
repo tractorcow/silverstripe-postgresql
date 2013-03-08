@@ -39,6 +39,8 @@ class PostgreSQLConnector extends DBConnector {
 	 * @var array
 	 */
 	protected $lastParameters = null;
+	
+	protected $lastRows = 0;
     
     /**
      * Escape a parameter to be used in the connection string
@@ -82,7 +84,7 @@ class PostgreSQLConnector extends DBConnector {
     }
     
     public function affectedRows() {
-		return pg_affected_rows($this->lastQuery);
+		return $this->lastRows;
     }
 
     public function getGeneratedID($table) {
@@ -202,9 +204,12 @@ class PostgreSQLConnector extends DBConnector {
                 return pg_query($conn, $sql);
             }
 		});
+		$this->lastRows = 0;
 		if ($result === false) {
 			if(!$errorLevel) return null;
 			$this->databaseError("Couldn't run query: $sql | " . $this->getLastError(), $errorLevel);
+		} else {
+			$this->lastRows = pg_affected_rows($result);
 		}
 
 		return new PostgreSQLQuery($result);
