@@ -649,8 +649,8 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 	 * @param string $indexSpec The specification of the index, see Database::requireIndex() for more details.
 	 */
 	public function createIndex($tableName, $indexName, $indexSpec) {
-		$createIndex=$this->getIndexSqlDefinition($tableName, $indexName, $indexSpec);
-		if($createIndex!==false) $this->query();
+		$createIndex = $this->getIndexSqlDefinition($tableName, $indexName, $indexSpec);
+		if($createIndex !== false) $this->query($createIndex);
 	}
 
 	/*
@@ -1282,32 +1282,6 @@ class PostgreSQLSchemaManager extends DBSchemaManager {
 		}
 	}
 
-	/**
-	 * Get the actual enum fields from the constraint value:
-	 * 
-	 * @param string $constraint
-	 * @return array List of enum items
-	 */
-	protected function enumValuesFromConstraint($constraint){
-		$constraint = substr($constraint, strpos($constraint, 'ANY (ARRAY[')+11);
-		$constraint = substr($constraint, 0, -11);
-		$constraints = array();
-		$segments = explode(',', $constraint);
-		foreach($segments as $this_segment){
-			$bits = preg_split('/ *:: */', $this_segment);
-			array_unshift($constraints, trim($bits[0], " '"));
-		}
-
-		return $constraints;
-	}
-
-	/*
-	 * This is a lookup table for data types.
-	 * For instance, Postgres uses 'INT', while MySQL uses 'UNSIGNED'
-	 * So this is a DB-specific list of equivilents.
-	 * 
-	 * @param string $type
-	 */
 	function dbDataType($type){
 		$values = array(
 			'unsigned integer' => 'INT'
