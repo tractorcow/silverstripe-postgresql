@@ -61,8 +61,12 @@ class PostgreSQLConnector extends DBConnector {
         return "$name='" . addslashes($value) . "'";
     }
 
-    public function connect($parameters) {
+    public function connect($parameters, $selectDB = false) {
 		$this->lastParameters = $parameters;
+		
+		// Note: Postgres always behaves as though $selectDB = true, ignoring
+		// any value actually passed in. The controller passes in true for other
+		// connectors such as PDOConnector.
 		
         // Escape parameters
         $arguments = array(

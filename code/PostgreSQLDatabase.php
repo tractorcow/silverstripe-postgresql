@@ -165,13 +165,13 @@ class PostgreSQLDatabase extends SS_Database {
 	protected function connectMaster() {
 		$parameters = $this->parameters;
 		$parameters['database'] = self::MASTER_DATABASE;
-		$this->connector->connect($parameters);
+		$this->connector->connect($parameters, true);
 	}
 	
 	protected function connectDefault() {
 		$parameters = $this->parameters;
 		$parameters['database'] = $this->databaseOriginal;
-		$this->connector->connect($parameters);
+		$this->connector->connect($parameters, true);
 	}
     
 	/**
