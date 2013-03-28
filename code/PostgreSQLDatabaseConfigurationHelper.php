@@ -7,7 +7,35 @@
  * 
  * @package postgresql
  */
-class PostgreSQLDatabaseConfigurationHelper implements DatabaseConfigurationHelper {
+class PostgreSQLDatabaseConfigurationHelper extends DatabaseConfigurationHelper {
+
+	public function makeConnection($databaseConfig) {
+		switch($databaseConfig['type']) {
+			case 'PostgrePDODatabase':
+				$connector = new PDOConnector();
+				break;
+			case 'PostgreSQLDatabase':
+				$connector = new PostgreSQLConnector();
+				break;
+			default:
+				return null;
+		}
+		// Inject some default parameters
+		if(empty($parameters['database'])) {
+			$parameters['database'] = PostgreSQLDatabase::MASTER_DATABASE;
+		}
+        if(empty($parameters['schema'])) {
+            $parameters['schema'] = PostgreSQLDatabase::MASTER_SCHEMA;
+        }
+        if(empty($parameters['port'])) {
+            $parameters['port'] = 5432;
+        }
+        if(empty($parameters['driver'])) {
+			$databaseConfig['driver'] = 'postgresql';
+		}
+		@$connector->connect($databaseConfig);
+		return $connector;
+	}
 
 	/**
 	 * Ensure that the database function pg_connect
@@ -18,36 +46,14 @@ class PostgreSQLDatabaseConfigurationHelper implements DatabaseConfigurationHelp
 	 * @return boolean
 	 */
 	public function requireDatabaseFunctions($databaseConfig) {
-		return (function_exists('pg_connect')) ? true : false;
-	}
-
-	/**
-	 * Ensure that the database server exists.
-	 * @param array $databaseConfig Associative array of db configuration, e.g. "server", "username" etc
-	 * @return array Result - e.g. array('success' => true, 'error' => 'details of error')
-	 */
-	public function requireDatabaseServer($databaseConfig) {
-		$success = false;
-		$error = '';
-		$username = $databaseConfig['username'] ? $databaseConfig['username'] : '';
-		$password = $databaseConfig['password'] ? $databaseConfig['password'] : '';
-		$server = $databaseConfig['server'];
-		$userPart = $username ? " user=$username" : '';
-		$passwordPart = $password ? " password=$password" : '';
-		$connstring = "host=$server port=5432 dbname=postgres {$userPart}{$passwordPart}";
-
-		$conn = @pg_connect($connstring);
-		if($conn) {
-			$success = true;
-		} else {
-			$success = false;
-			$error = 'PostgreSQL requires a valid username and password to determine if the server exists.';
+		switch($databaseConfig['type']) {
+			case 'PostgreSQLDatabase':
+				return function_exists('pg_connect');
+			case 'PostgrePDODatabase':
+				return class_exists('PDO') && in_array('postgresql', PDO::getAvailableDrivers());
+			default:
+				return false;
 		}
-		
-		return array(
-			'success' => $success,
-			'error' => $error
-		);
 	}
 
 	/**
@@ -56,54 +62,8 @@ class PostgreSQLDatabaseConfigurationHelper implements DatabaseConfigurationHelp
 	 * @return array Result - e.g. array('success' => true, 'error' => 'details of error')
 	 */
 	public function requireDatabaseConnection($databaseConfig) {
-		$success = false;
-		$error = '';
-		$username = $databaseConfig['username'] ? $databaseConfig['username'] : '';
-		$password = $databaseConfig['password'] ? $databaseConfig['password'] : '';
-		$server = $databaseConfig['server'];
-		$userPart = $username ? " user=$username" : '';
-		$passwordPart = $password ? " password=$password" : '';
-		$connstring = "host=$server port=5432 dbname=postgres {$userPart}{$passwordPart}";
-		
-		$conn = @pg_connect($connstring);
-		if($conn) {
-			$success = true;
-		} else {
-			$success = false;
-			$error = '';
-		}
-		
-		return array(
-			'success' => $success,
-			'connection' => $conn,
-			'error' => $error
-		);
-	}
-
-	public function getDatabaseVersion($databaseConfig) {
-		$version = 0;
-		$username = $databaseConfig['username'] ? $databaseConfig['username'] : '';
-		$password = $databaseConfig['password'] ? $databaseConfig['password'] : '';
-		$server = $databaseConfig['server'];
-		$userPart = $username ? " user=$username" : '';
-		$passwordPart = $password ? " password=$password" : '';
-		$connstring = "host=$server port=5432 dbname=postgres {$userPart}{$passwordPart}";
-		$conn = @pg_connect($connstring);
-		$info = @pg_version($conn);
-		$version = ($info && isset($info['server'])) ? $info['server'] : null;
-		if(!$version) {
-			// fallback to using the version() function
-			$result = @pg_query($conn, "SELECT version()");
-			$row = @pg_fetch_array($result);
-
-			if($row && isset($row[0])) {
-				$parts = explode(' ', trim($row[0]));
-				// ASSUMPTION version number is the second part e.g. "PostgreSQL 8.4.3"
-				$version = trim($parts[1]);
-			}
-		}
-
-		return $version;
+		$databaseConfig['database'] = 'postgres';
+		return parent::requireDatabaseConnection($databaseConfig);
 	}
 
 	/**
@@ -160,6 +120,10 @@ class PostgreSQLDatabaseConfigurationHelper implements DatabaseConfigurationHelp
 			'success' => $success,
 			'alreadyExists' => $alreadyExists
 		);
+	}
+
+	public function requireDatabaseAlterPermissions($databaseConfig) {
+		
 	}
 
 }
